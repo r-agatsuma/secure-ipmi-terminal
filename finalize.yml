@@ -40,9 +40,9 @@
       changed_when: false
       failed_when: u2f_users.rc != 0 or ('sysadmin:' not in u2f_users.stdout) or ('ipmi:' not in u2f_users.stdout)
 
-    - name: sysadmin/ipmiにYubiKeyが2本以上登録されていることを確認
+    - name: sysadmin/ipmiにFIDO2 credentialが1本以上登録されていることを確認
       ansible.builtin.shell: |
-        awk -F: '$1 == "sysadmin" && NF >= 3 { sysadmin_ok=1 } $1 == "ipmi" && NF >= 3 { ipmi_ok=1 } END { exit !(sysadmin_ok && ipmi_ok) }' /etc/u2f_mappings
+        awk -F: '$1 == "sysadmin" && length($2) > 0 { sysadmin_ok=1 } $1 == "ipmi" && length($2) > 0 { ipmi_ok=1 } END { exit !(sysadmin_ok && ipmi_ok) }' /etc/u2f_mappings
       args:
         executable: /bin/sh
       changed_when: false

@@ -1,0 +1,27 @@
+---
+- name: secure-ipmi-terminal 基本構成
+  hosts: local
+  gather_facts: true
+  become: false
+
+  pre_tasks:
+    - name: rootで実行されていることを確認
+      ansible.builtin.assert:
+        that:
+          - ansible_user_uid == 0
+        fail_msg: "sudo ansible-playbook bootstrap.yml の形で実行してください。"
+
+    - name: Debian 13系であることを確認
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Debian'
+          - ansible_distribution_major_version == '13'
+        fail_msg: "このCookbookはDebian 13 (trixie)専用です。"
+
+  roles:
+    - base
+    - accounts
+    - desktop
+    - privilege
+    - firewall
+    - tailscale

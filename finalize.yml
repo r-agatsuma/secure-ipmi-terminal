@@ -1,0 +1,72 @@
+---
+- name: secure-ipmi-terminal 認証の最終構成
+  hosts: local
+  gather_facts: true
+  become: false
+
+  vars:
+    # 初回はfalseのまま実行し、FIDO2認証を検証してからtrueで再実行する。
+    lock_passwords: false
+
+  pre_tasks:
+    - name: rootで実行されていることを確認
+      ansible.builtin.assert:
+        that:
+          - ansible_user_uid == 0
+        fail_msg: "sudo ansible-playbook finalize.yml の形で実行してください。"
+
+    - name: Debian 13系であることを確認
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Debian'
+          - ansible_distribution_major_version == '13'
+        fail_msg: "このCookbookはDebian 13 (trixie)専用です。"
+
+    - name: PAM用FIDO2マッピングが存在することを確認
+      ansible.builtin.stat:
+        path: /etc/u2f_mappings
+      register: u2f_mapping
+
+    - name: PAM用FIDO2マッピングがない場合は停止
+      ansible.builtin.assert:
+        that:
+          - u2f_mapping.stat.exists
+          - u2f_mapping.stat.isreg
+        fail_msg: "先にREADMEの手順で /etc/u2f_mappings を作成してください。"
+
+    - name: adminとipmiのマッピングが含まれることを確認
+      ansible.builtin.command: grep -E '^(admin|ipmi):' /etc/u2f_mappings
+      register: u2f_users
+      changed_when: false
+      failed_when: u2f_users.rc != 0 or ('admin:' not in u2f_users.stdout) or ('ipmi:' not in u2f_users.stdout)
+
+    - name: admin/ipmiにYubiKeyが2本以上登録されていることを確認
+      ansible.builtin.shell: |
+        awk -F: '$1 == "admin" && NF >= 3 { admin_ok=1 } $1 == "ipmi" && NF >= 3 { ipmi_ok=1 } END { exit !(admin_ok && ipmi_ok) }' /etc/u2f_mappings
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+  roles:
+    - fido-auth
+    - privilege
+
+  post_tasks:
+    - name: パスワード認証を最終的にロック
+      ansible.builtin.shell: |
+        set -eu
+        passwd -l root >/dev/null 2>&1 || true
+        passwd -l ipmi >/dev/null 2>&1 || true
+        passwd -l admin >/dev/null 2>&1
+      args:
+        executable: /bin/sh
+      when: lock_passwords | bool
+      changed_when: true
+
+    - name: 最終ロック前の案内
+      ansible.builtin.debug:
+        msg:
+          - "PAM設定を反映しました。まだadminのUNIXパスワードはロックしていません。"
+          - "READMEのpamtester手順で admin/login, ipmi/gdm-password, admin/sudo を確認してください。"
+          - "問題なければ: sudo ansible-playbook finalize.yml -e lock_passwords=true"
+      when: not (lock_passwords | bool)

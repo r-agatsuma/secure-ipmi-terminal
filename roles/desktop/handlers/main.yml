@@ -1,0 +1,4 @@
+---
+- name: restart gdm
+  ansible.builtin.debug:
+    msg: "GDMの再起動は現在のGUIセッションを切断するため、自動では行いません。次回再起動時にXorg設定が反映されます。"

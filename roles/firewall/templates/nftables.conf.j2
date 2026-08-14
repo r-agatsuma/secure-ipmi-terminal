@@ -1,0 +1,36 @@
+#!/usr/sbin/nft -f
+
+# secure-ipmi-terminalの最小ホストFW。
+# inboundは原則drop、outboundは許可する。
+# Tailscaleはこのrulesetのロード後に自身のnetfilterルールを追加する。
+flush ruleset
+
+table inet secure_ipmi_terminal {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        ct state invalid drop
+        ct state established,related accept
+        iifname "lo" accept
+
+        # IPv4/IPv6の基本制御通信を許可する。
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+
+        # DHCPクライアントとして必要な応答を許可する。
+        udp sport 67 udp dport 68 accept
+        udp sport 547 udp dport 546 accept
+
+        # Tailscaleのdirect connectivity用UDPを許可する。
+        # tailscale0からの新規inboundはここでは許可せず、outbound通信への応答だけをconntrackで通す。
+        udp dport 41641 accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

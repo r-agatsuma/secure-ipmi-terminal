@@ -1,0 +1,32 @@
+---
+- name: IPMI端末用GUIパッケージを導入
+  ansible.builtin.apt:
+    name:
+      - firefox-esr
+      - gdm3
+      - gnome-core
+      - gnome-session-xsession
+      - gnome-terminal
+      - keepassxc
+      - openssh-client
+      - x11-utils
+    state: present
+
+- name: GDMでWaylandを無効化しXorgを使用
+  ansible.builtin.lineinfile:
+    path: /etc/gdm3/daemon.conf
+    regexp: '^#?WaylandEnable='
+    line: 'WaylandEnable=false'
+    insertafter: '^\[daemon\]'
+    backup: true
+  notify: restart gdm
+
+- name: graphical.targetを既定に設定
+  ansible.builtin.command: systemctl set-default graphical.target
+  register: default_target
+  changed_when: "'Created symlink' in default_target.stdout or 'Created symlink' in default_target.stderr"
+
+- name: GDMを有効化
+  ansible.builtin.systemd_service:
+    name: gdm3
+    enabled: true

@@ -1,0 +1,35 @@
+---
+- name: installerで作成したadminユーザーが存在することを確認
+  ansible.builtin.getent:
+    database: passwd
+    key: admin
+
+- name: adminのホームを本人以外から読めないようにする
+  ansible.builtin.file:
+    path: /home/admin
+    owner: admin
+    group: admin
+    mode: '0700'
+
+- name: ipmiユーザーを作成
+  ansible.builtin.user:
+    name: ipmi
+    comment: IPMI管理専用ユーザー
+    shell: /bin/bash
+    create_home: true
+    home: /home/ipmi
+    password_lock: true
+    groups: ''
+    append: false
+
+- name: ipmiのホームを本人以外から読めないようにする
+  ansible.builtin.file:
+    path: /home/ipmi
+    owner: ipmi
+    group: ipmi
+    mode: '0700'
+
+- name: rootのパスワードログインをロック
+  ansible.builtin.user:
+    name: root
+    password_lock: true

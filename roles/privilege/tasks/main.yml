@@ -1,0 +1,32 @@
+---
+- name: adminをsudoグループへ所属させる
+  ansible.builtin.user:
+    name: admin
+    groups: sudo
+    append: true
+
+- name: ipmiが特権グループに入っていないことを保証
+  ansible.builtin.command: gpasswd -d ipmi {{ item }}
+  loop:
+    - sudo
+    - adm
+    - disk
+    - docker
+    - libvirt
+    - lxd
+  register: group_remove
+  changed_when: "'Removing user' in group_remove.stdout"
+  failed_when: false
+
+- name: sudoを毎回再認証する設定を配置
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/99-secure-ipmi-terminal
+    owner: root
+    group: root
+    mode: '0440'
+    content: |
+      # secure-ipmi-terminal: sudo認証キャッシュを無効化する。
+      Defaults timestamp_timeout=0
+      # OS管理権限はadminだけに与える。
+      admin ALL=(ALL:ALL) ALL
+    validate: '/usr/sbin/visudo -cf %s'

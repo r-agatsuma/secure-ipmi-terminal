@@ -1,0 +1,40 @@
+---
+- name: PAM用FIDO2マッピングの所有権を固定
+  ansible.builtin.file:
+    path: /etc/u2f_mappings
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: GDMはipmiユーザーのみ許可しFIDO2 PIN+touchで認証
+  ansible.builtin.blockinfile:
+    path: /etc/pam.d/gdm-password
+    insertafter: '^#%PAM-1.0'
+    marker: '# {mark} secure-ipmi-terminal FIDO2'
+    block: |
+      # GUIログインはipmiだけに限定する。
+      auth requisite pam_succeed_if.so quiet user = ipmi
+      # FIDO2 PIN(User Verification) + touch(User Presence)を要求する。
+      auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1
+    backup: true
+
+- name: TTYログインはadminユーザーのみ許可しFIDO2 PIN+touchで認証
+  ansible.builtin.blockinfile:
+    path: /etc/pam.d/login
+    insertafter: '^#%PAM-1.0'
+    marker: '# {mark} secure-ipmi-terminal FIDO2'
+    block: |
+      # TTYログインはadminだけに限定する。
+      auth requisite pam_succeed_if.so quiet user = admin
+      auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1
+    backup: true
+
+- name: sudoはadminユーザーのみ許可しFIDO2 PIN+touchで認証
+  ansible.builtin.blockinfile:
+    path: /etc/pam.d/sudo
+    insertafter: '^#%PAM-1.0'
+    marker: '# {mark} secure-ipmi-terminal FIDO2'
+    block: |
+      auth requisite pam_succeed_if.so quiet user = admin
+      auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1
+    backup: true

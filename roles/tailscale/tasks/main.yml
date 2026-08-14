@@ -1,0 +1,41 @@
+---
+- name: Tailscale keyringディレクトリを作成
+  ansible.builtin.file:
+    path: /usr/share/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Tailscale公式APT keyringを取得
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Tailscale公式APT sourceを取得
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/debian/trixie.tailscale-keyring.list
+    dest: /etc/apt/sources.list.d/tailscale.list
+    owner: root
+    group: root
+    mode: '0644'
+  register: tailscale_repo
+
+- name: Tailscale repository追加後にAPTキャッシュを更新
+  ansible.builtin.apt:
+    update_cache: true
+  when: tailscale_repo.changed
+
+- name: Tailscaleを導入
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+
+- name: tailscaledを有効化
+  ansible.builtin.systemd_service:
+    name: tailscaled
+    enabled: true
+    state: started

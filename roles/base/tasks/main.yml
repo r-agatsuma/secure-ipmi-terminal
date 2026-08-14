@@ -1,0 +1,25 @@
+---
+- name: APTキャッシュを更新
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: 基本パッケージを導入
+  ansible.builtin.apt:
+    name:
+      - ansible
+      - ca-certificates
+      - curl
+      - cryptsetup
+      - fido2-tools
+      - git
+      - gnupg
+      - jq
+      - libpam-u2f
+      - nftables
+      - pamtester
+      - pamu2fcfg
+      - sudo
+      - systemd-cryptsetup
+      - usbutils
+    state: present

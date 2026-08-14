@@ -24,8 +24,10 @@
   - `sysadmin` TTY login: YubiKey FIDO2 PIN + touch
   - `sysadmin` sudo: YubiKey FIDO2 PIN + touch
   - sudo認証キャッシュは無効 (`timestamp_timeout=0`)
-- Disk: LUKS2 + YubiKey FIDO2 x2 を最終目標とする
-  - 端末内データの救出は要件にしない
+- Disk: LUKS2 + YubiKey FIDO2
+  - 標準構成ではYubiKey 1本を登録する
+  - 2本目のYubiKeyは可用性を上げたい場合のみ任意で追加する
+  - 端末内データの救出は要件にせず、YubiKeyの故障・紛失時は再インストールを許容する
   - ただしroot LUKSのFIDO2 boot unlockはDebianのinitramfs実装差があるため、初期パスフレーズは実機でFIDO2起動確認が完了するまで削除しない
 - Tailscale
   - native `tailscaled`
@@ -167,7 +169,9 @@ tailscale status
 - exit node化
 - Tailscale SSH server
 
-## 5. PAM用YubiKeyを2本登録
+## 5. PAM用YubiKeyを登録
+
+標準構成ではYubiKeyを1本だけ登録します。この端末は壊れた場合の再インストールを許容するため、2本目は必須にしません。2本目は認証強度を上げるためではなく、YubiKeyの故障・紛失時の可用性を上げたい場合のみ任意で追加します。
 
 FIDO2 credentialのoriginはhostname変更で壊れないよう、以下に固定します。
 
@@ -175,12 +179,48 @@ FIDO2 credentialのoriginはhostname変更で壊れないよう、以下に固�
 pam://secure-ipmi-terminal
 ```
 
+YubiKeyを挿し、`sysadmin`と`ipmi`のcredentialを作成します。
+
+```bash
+umask 077
+pamu2fcfg -u sysadmin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N > /tmp/sysadmin.u2f
+pamu2fcfg -u ipmi -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N > /tmp/ipmi.u2f
+```
+
+root管理のmapping fileへ配置する前に、2ユーザーが1行ずつ出力されていることを確認します。
+
+```bash
+cat /tmp/sysadmin.u2f /tmp/ipmi.u2f
+```
+
+期待する形:
+
+```text
+sysadmin:...
+ipmi:...
+```
+
+問題なければ配置します。
+
+```bash
+cat /tmp/sysadmin.u2f /tmp/ipmi.u2f | sudo tee /etc/u2f_mappings >/dev/null
+sudo chown root:root /etc/u2f_mappings
+sudo chmod 0600 /etc/u2f_mappings
+rm -f /tmp/sysadmin.u2f /tmp/ipmi.u2f
+```
+
+秘密鍵はYubiKeyから出ません。`/etc/u2f_mappings`はPAMが利用するcredential mappingです。
+
+### Optional: 2本目のYubiKeyを追加する
+
+2本運用に変更したい場合だけ実施します。手順を単純に保つため、YubiKey A/Bの両方が手元にある状態でmappingを作り直します。
+
 まずYubiKey Aを挿します。
 
 ```bash
 umask 077
 pamu2fcfg -u sysadmin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/sysadmin.u2f
-pamu2fcfg -u ipmi  -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/ipmi.u2f
+pamu2fcfg -u ipmi -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/ipmi.u2f
 ```
 
 YubiKey Aを抜き、YubiKey Bを挿します。
@@ -195,16 +235,15 @@ pamu2fcfg -u ipmi -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N
 printf '\n' >> /tmp/ipmi.u2f
 ```
 
-root管理のmapping fileへ配置します。
+内容を確認してからmapping fileを置き換えます。
 
 ```bash
+cat /tmp/sysadmin.u2f /tmp/ipmi.u2f
 cat /tmp/sysadmin.u2f /tmp/ipmi.u2f | sudo tee /etc/u2f_mappings >/dev/null
 sudo chown root:root /etc/u2f_mappings
 sudo chmod 0600 /etc/u2f_mappings
 rm -f /tmp/sysadmin.u2f /tmp/ipmi.u2f
 ```
-
-秘密鍵はYubiKeyから出ません。`/etc/u2f_mappings`はPAMが利用するcredential mappingです。
 
 ## 6. FIDO2 PAM設定を投入（まだパスワードはロックしない）
 
@@ -299,13 +338,13 @@ cat /etc/crypttab
 sudo systemd-cryptenroll --list-devices
 ```
 
-対象を例として `/dev/nvme0n1p3` とした場合、YubiKey A/Bを1本ずつ登録します。
+対象を例として `/dev/nvme0n1p3` とした場合、まず標準構成のYubiKey 1本を登録します。
 
 ```bash
 sudo systemd-cryptenroll --fido2-device=auto /dev/nvme0n1p3
 ```
 
-2本目へ差し替えてもう一度実行します。
+2本目のYubiKeyを使う場合は任意で差し替えて、もう一度実行します。1本運用の場合はこの操作をスキップします。
 
 ```bash
 sudo systemd-cryptenroll --fido2-device=auto /dev/nvme0n1p3
@@ -319,7 +358,7 @@ sudo systemd-cryptenroll --fido2-device=auto /dev/nvme0n1p3
 
 FIDO2 promptが出ない場合は、その場で構成を確認して修正します。この状態でも一時パスフレーズが残っているためboot不能にはなりません。
 
-FIDO2でYubiKey A/B双方のboot unlockを確認してから、初期パスフレーズkeyslotを削除します。削除作業は実機確認後に行います。
+標準構成では登録したYubiKey 1本でboot unlockを確認してから、初期パスフレーズkeyslotを削除します。2本目を登録した場合は、両方でboot unlockできることを確認してから削除します。削除作業は実機確認後に行います。
 
 ## 10. ROMED8 Auto-Typeを検証
 
@@ -354,7 +393,7 @@ sudo tests/verify.sh
 - Tailscale経由でOpenWrt配下のBMCへ接続可能
 - Tailnetから管理端末への不要なincoming connectionがshields-upで拒否される
 - ROMED8 HTML5 KVMへのAuto-Typeが安定する
-- LUKS FIDO2 boot unlockはYubiKey A/B双方で確認する
+- LUKS FIDO2 boot unlockは登録したYubiKeyで確認する（2本目を登録した場合は両方で確認）
 
 ## 日常運用・設定変更
 

@@ -34,15 +34,15 @@
           - u2f_mapping.stat.isreg
         fail_msg: "先にREADMEの手順で /etc/u2f_mappings を作成してください。"
 
-    - name: adminとipmiのマッピングが含まれることを確認
-      ansible.builtin.command: grep -E '^(admin|ipmi):' /etc/u2f_mappings
+    - name: sysadminとipmiのマッピングが含まれることを確認
+      ansible.builtin.command: grep -E '^(sysadmin|ipmi):' /etc/u2f_mappings
       register: u2f_users
       changed_when: false
-      failed_when: u2f_users.rc != 0 or ('admin:' not in u2f_users.stdout) or ('ipmi:' not in u2f_users.stdout)
+      failed_when: u2f_users.rc != 0 or ('sysadmin:' not in u2f_users.stdout) or ('ipmi:' not in u2f_users.stdout)
 
-    - name: admin/ipmiにYubiKeyが2本以上登録されていることを確認
+    - name: sysadmin/ipmiにYubiKeyが2本以上登録されていることを確認
       ansible.builtin.shell: |
-        awk -F: '$1 == "admin" && NF >= 3 { admin_ok=1 } $1 == "ipmi" && NF >= 3 { ipmi_ok=1 } END { exit !(admin_ok && ipmi_ok) }' /etc/u2f_mappings
+        awk -F: '$1 == "sysadmin" && NF >= 3 { sysadmin_ok=1 } $1 == "ipmi" && NF >= 3 { ipmi_ok=1 } END { exit !(sysadmin_ok && ipmi_ok) }' /etc/u2f_mappings
       args:
         executable: /bin/sh
       changed_when: false
@@ -57,7 +57,7 @@
         set -eu
         passwd -l root >/dev/null 2>&1 || true
         passwd -l ipmi >/dev/null 2>&1 || true
-        passwd -l admin >/dev/null 2>&1
+        passwd -l sysadmin >/dev/null 2>&1
       args:
         executable: /bin/sh
       when: lock_passwords | bool
@@ -66,7 +66,7 @@
     - name: 最終ロック前の案内
       ansible.builtin.debug:
         msg:
-          - "PAM設定を反映しました。まだadminのUNIXパスワードはロックしていません。"
-          - "READMEのpamtester手順で admin/login, ipmi/gdm-password, admin/sudo を確認してください。"
+          - "PAM設定を反映しました。まだsysadminのUNIXパスワードはロックしていません。"
+          - "READMEのpamtester手順で sysadmin/login, ipmi/gdm-password, sysadmin/sudo を確認してください。"
           - "問題なければ: sudo ansible-playbook finalize.yml -e lock_passwords=true"
       when: not (lock_passwords | bool)

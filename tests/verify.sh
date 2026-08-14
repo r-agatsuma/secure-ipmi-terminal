@@ -31,13 +31,13 @@ for cmd in ansible firefox-esr keepassxc nft tailscale pamu2fcfg pamtester; do
     check_cmd "$cmd"
 done
 
-if getent passwd admin >/dev/null; then pass "adminユーザーが存在"; else fail "adminユーザーが存在しない"; fi
+if getent passwd sysadmin >/dev/null; then pass "sysadminユーザーが存在"; else fail "sysadminユーザーが存在しない"; fi
 if getent passwd ipmi >/dev/null; then pass "ipmiユーザーが存在"; else fail "ipmiユーザーが存在しない"; fi
 
-if id -nG admin 2>/dev/null | tr ' ' '\n' | grep -qx sudo; then pass "adminはsudoグループ所属"; else fail "adminがsudoグループにいない"; fi
+if id -nG sysadmin 2>/dev/null | tr ' ' '\n' | grep -qx sudo; then pass "sysadminはsudoグループ所属"; else fail "sysadminがsudoグループにいない"; fi
 if id -nG ipmi 2>/dev/null | tr ' ' '\n' | grep -qx sudo; then fail "ipmiがsudoグループに所属している"; else pass "ipmiはsudoグループ非所属"; fi
 
-for home in /home/admin /home/ipmi; do
+for home in /home/sysadmin /home/ipmi; do
     mode=$(stat -c '%a' "$home" 2>/dev/null || echo missing)
     if [ "$mode" = "700" ]; then pass "$home mode=0700"; else fail "$home mode=$mode (expected 700)"; fi
 done
@@ -55,7 +55,7 @@ if systemctl is-active tailscaled >/dev/null 2>&1; then pass "tailscaled active"
 
 if [ -f /etc/u2f_mappings ]; then
     pass "/etc/u2f_mappings exists"
-    if grep -q '^admin:' /etc/u2f_mappings && grep -q '^ipmi:' /etc/u2f_mappings; then pass "admin/ipmi FIDO mapping exists"; else fail "FIDO mapping不足"; fi
+    if grep -q '^sysadmin:' /etc/u2f_mappings && grep -q '^ipmi:' /etc/u2f_mappings; then pass "sysadmin/ipmi FIDO mapping exists"; else fail "FIDO mapping不足"; fi
 else
     warn "/etc/u2f_mappings未作成（finalize前なら正常）"
 fi

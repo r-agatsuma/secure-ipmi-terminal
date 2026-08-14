@@ -13,7 +13,7 @@
 - `ipmi`ユーザー
   - GUI/Firefox/KeePassXC/Terminal/SSH用
   - `sudo`なし
-- `admin`ユーザー
+- `sysadmin`ユーザー
   - OS管理専用
   - TTYログインのみ
   - `sudo`あり
@@ -21,8 +21,8 @@
   - パスワードログイン禁止
 - 認証
   - `ipmi` GUI login: YubiKey FIDO2 PIN + touch
-  - `admin` TTY login: YubiKey FIDO2 PIN + touch
-  - `admin` sudo: YubiKey FIDO2 PIN + touch
+  - `sysadmin` TTY login: YubiKey FIDO2 PIN + touch
+  - `sysadmin` sudo: YubiKey FIDO2 PIN + touch
   - sudo認証キャッシュは無効 (`timestamp_timeout=0`)
 - Disk: LUKS2 + YubiKey FIDO2 x2 を最終目標とする
   - 端末内データの救出は要件にしない
@@ -83,13 +83,13 @@ Debian Installerでは以下を基準にします。
 
 root用パスワードは**空欄**にします。Debian Installerではこの方法でrootのパスワードログインを無効化し、最初に作る一般ユーザーからsudoを利用する構成にします。
 
-最初のユーザーは以下で固定します。
+最初のユーザーは以下で固定します。Debian Installerでは `admin` は予約ユーザー名のため、このCookbookでは `sysadmin` を使用します。
 
 ```text
-username: admin
+username: sysadmin
 ```
 
-`admin`には初回構築用の一時UNIXパスワードを設定します。このパスワードはFIDO2認証の動作確認後にロックします。
+`sysadmin`には初回構築用の一時UNIXパスワードを設定します。このパスワードはFIDO2認証の動作確認後にロックします。
 
 ### Disk
 
@@ -110,7 +110,7 @@ SSH serverは不要です。この端末はSSHクライアントとして使い�
 
 ## 2. リポジトリを取得
 
-`admin`でログインします。
+`sysadmin`でログインします。
 
 ```bash
 sudo apt update
@@ -133,7 +133,7 @@ sudo ansible-playbook bootstrap.yml
 - `ipmi`ユーザー作成
 - Firefox ESR / KeePassXC / GNOME on Xorg / Terminal / OpenSSH client
 - pam-u2f関連ツール
-- `admin`のみsudo可能
+- `sysadmin`のみsudo可能
 - sudo `timestamp_timeout=0`
 - nftables
 - Tailscale公式APT repository + native tailscaled
@@ -179,16 +179,16 @@ pam://secure-ipmi-terminal
 
 ```bash
 umask 077
-pamu2fcfg -u admin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/admin.u2f
+pamu2fcfg -u sysadmin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/sysadmin.u2f
 pamu2fcfg -u ipmi  -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/ipmi.u2f
 ```
 
 YubiKey Aを抜き、YubiKey Bを挿します。
 
 ```bash
-printf ':' >> /tmp/admin.u2f
-pamu2fcfg -u admin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N -n | tr -d '\n' >> /tmp/admin.u2f
-printf '\n' >> /tmp/admin.u2f
+printf ':' >> /tmp/sysadmin.u2f
+pamu2fcfg -u sysadmin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N -n | tr -d '\n' >> /tmp/sysadmin.u2f
+printf '\n' >> /tmp/sysadmin.u2f
 
 printf ':' >> /tmp/ipmi.u2f
 pamu2fcfg -u ipmi -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N -n | tr -d '\n' >> /tmp/ipmi.u2f
@@ -198,10 +198,10 @@ printf '\n' >> /tmp/ipmi.u2f
 root管理のmapping fileへ配置します。
 
 ```bash
-cat /tmp/admin.u2f /tmp/ipmi.u2f | sudo tee /etc/u2f_mappings >/dev/null
+cat /tmp/sysadmin.u2f /tmp/ipmi.u2f | sudo tee /etc/u2f_mappings >/dev/null
 sudo chown root:root /etc/u2f_mappings
 sudo chmod 0600 /etc/u2f_mappings
-rm -f /tmp/admin.u2f /tmp/ipmi.u2f
+rm -f /tmp/sysadmin.u2f /tmp/ipmi.u2f
 ```
 
 秘密鍵はYubiKeyから出ません。`/etc/u2f_mappings`はPAMが利用するcredential mappingです。
@@ -212,24 +212,24 @@ rm -f /tmp/admin.u2f /tmp/ipmi.u2f
 sudo ansible-playbook finalize.yml
 ```
 
-この時点では以下のPAM policyが入りますが、`admin`の一時UNIXパスワードはまだ残っています。
+この時点では以下のPAM policyが入りますが、`sysadmin`の一時UNIXパスワードはまだ残っています。
 
 - `gdm-password`: `ipmi`のみ + FIDO2 PIN/touch
-- `login`: `admin`のみ + FIDO2 PIN/touch
-- `sudo`: `admin`のみ + FIDO2 PIN/touch
+- `login`: `sysadmin`のみ + FIDO2 PIN/touch
+- `sudo`: `sysadmin`のみ + FIDO2 PIN/touch
 
 FIDO2が成功すれば従来のpassword stackへ進まず認証成功します。FIDO2が失敗した場合は、最終ロック前であれば従来のUNIX passwordへfallbackできます。
 
 ## 7. PAM認証を検証
 
-現在の`admin`セッションは閉じないでください。
+現在の`sysadmin`セッションは閉じないでください。
 
 まずPAM単体で確認します。
 
 ```bash
-sudo pamtester login admin authenticate
+sudo pamtester login sysadmin authenticate
 sudo pamtester gdm-password ipmi authenticate
-sudo pamtester sudo admin authenticate
+sudo pamtester sudo sysadmin authenticate
 ```
 
 いずれもYubiKey PIN + touchで成功することを確認します。
@@ -257,7 +257,7 @@ echo "$XDG_SESSION_TYPE"
 x11
 ```
 
-`admin`はGDMからGUIログインできないことも確認します。
+`sysadmin`はGDMからGUIログインできないことも確認します。
 
 ## 8. UNIX passwordを最終ロック
 
@@ -269,14 +269,14 @@ x11
 sudo -i
 ```
 
-そのroot shellは閉じず、別の`admin`端末から以下を実行します。
+そのroot shellは閉じず、別の`sysadmin`端末から以下を実行します。
 
 ```bash
 cd ~/secure-ipmi-terminal
 sudo ansible-playbook finalize.yml -e lock_passwords=true
 ```
 
-これによりroot/admin/ipmiのUNIX passwordをlockします。
+これによりroot/sysadmin/ipmiのUNIX passwordをlockします。
 
 ロック後、再度以下を確認します。
 
@@ -285,7 +285,7 @@ sudo -k
 sudo true
 ```
 
-別TTYでも`admin` + FIDO2 PIN/touchでログインできることを確認し、問題がなければ一時root shellを閉じます。
+別TTYでも`sysadmin` + FIDO2 PIN/touchでログインできることを確認し、問題がなければ一時root shellを閉じます。
 
 ## 9. LUKS2へYubiKey FIDO2を登録
 
@@ -346,10 +346,10 @@ sudo tests/verify.sh
 手動確認項目:
 
 - `ipmi` GUI login: FIDO2 PIN + touch
-- `admin` TTY login: FIDO2 PIN + touch
-- `admin` sudo: 毎回FIDO2 PIN + touch
+- `sysadmin` TTY login: FIDO2 PIN + touch
+- `sysadmin` sudo: 毎回FIDO2 PIN + touch
 - `ipmi`: sudo不可
-- `admin`: GDM GUI login不可
+- `sysadmin`: GDM GUI login不可
 - `echo $XDG_SESSION_TYPE` = `x11`
 - Tailscale経由でOpenWrt配下のBMCへ接続可能
 - Tailnetから管理端末への不要なincoming connectionがshields-upで拒否される

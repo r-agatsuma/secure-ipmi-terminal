@@ -1,14 +1,14 @@
 ---
-- name: installerで作成したadminユーザーが存在することを確認
+- name: installerで作成したsysadminユーザーが存在することを確認
   ansible.builtin.getent:
     database: passwd
-    key: admin
+    key: sysadmin
 
-- name: adminのホームを本人以外から読めないようにする
+- name: sysadminのホームを本人以外から読めないようにする
   ansible.builtin.file:
-    path: /home/admin
-    owner: admin
-    group: admin
+    path: /home/sysadmin
+    owner: sysadmin
+    group: sysadmin
     mode: '0700'
 
 - name: ipmiユーザーを作成

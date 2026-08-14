@@ -1,7 +1,7 @@
 ---
-- name: adminをsudoグループへ所属させる
+- name: sysadminをsudoグループへ所属させる
   ansible.builtin.user:
-    name: admin
+    name: sysadmin
     groups: sudo
     append: true
 
@@ -27,6 +27,6 @@
     content: |
       # secure-ipmi-terminal: sudo認証キャッシュを無効化する。
       Defaults timestamp_timeout=0
-      # OS管理権限はadminだけに与える。
-      admin ALL=(ALL:ALL) ALL
+      # OS管理権限はsysadminだけに与える。
+      sysadmin ALL=(ALL:ALL) ALL
     validate: '/usr/sbin/visudo -cf %s'

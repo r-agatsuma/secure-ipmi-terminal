@@ -1,0 +1,190 @@
+---
+- name: root LUKS用crypttab entryを特定
+  ansible.builtin.shell: |
+    awk '
+      /^[[:space:]]*(#|$)/ { next }
+      {
+        nopts = split($4, opts, ",")
+        for (i = 1; i <= nopts; i++) {
+          if (opts[i] == "x-initrd.attach") {
+            print $1 "\t" $2 "\t" $3 "\t" $4
+            count++
+          }
+        }
+      }
+      END { if (count != 1) exit 1 }
+    ' /etc/crypttab
+  args:
+    executable: /bin/sh
+  register: luks_root_crypttab_entry
+  changed_when: false
+
+- name: root LUKS用crypttab entryを解析
+  ansible.builtin.set_fact:
+    luks_root_crypttab_fields: "{{ luks_root_crypttab_entry.stdout.split('\t') }}"
+
+- name: root LUKS用crypttab entryの形式を確認
+  ansible.builtin.assert:
+    that:
+      - luks_root_crypttab_fields | length == 4
+    fail_msg: "/etc/crypttabのx-initrd.attach付きroot LUKS entryを1件に特定できません。"
+
+- name: root LUKS deviceを解決
+  ansible.builtin.shell: |
+    set -eu
+    source='{{ luks_root_crypttab_fields[1] }}'
+    case "$source" in
+      UUID=*)
+        path="/dev/disk/by-uuid/${source#UUID=}"
+        ;;
+      /dev/*)
+        path="$source"
+        ;;
+      *)
+        printf 'unsupported crypttab source: %s\n' "$source" >&2
+        exit 1
+        ;;
+    esac
+    readlink -f "$path"
+  args:
+    executable: /bin/sh
+  register: luks_root_device
+  changed_when: false
+
+- name: root LUKS2にsystemd-fido2 tokenが登録済みであることを確認
+  ansible.builtin.shell: |
+    set -eu
+    cryptsetup luksDump --dump-json-metadata '{{ luks_root_device.stdout }}' \
+      | jq -e '[.tokens[]? | select(.type == "systemd-fido2")] | length > 0' \
+      >/dev/null
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+- name: crypttabのFIDO2 optionが競合していないことを確認
+  ansible.builtin.shell: |
+    set -eu
+    options='{{ luks_root_crypttab_fields[3] }}'
+    old_ifs=$IFS
+    IFS=,
+    for option in $options; do
+      case "$option" in
+        fido2-device=auto) ;;
+        fido2-device=*)
+          printf 'unsupported existing FIDO2 option: %s\n' "$option" >&2
+          exit 1
+          ;;
+      esac
+    done
+    IFS=$old_ifs
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+- name: root LUKS用crypttab optionを解析
+  ansible.builtin.set_fact:
+    luks_root_crypttab_options: "{{ luks_root_crypttab_fields[3].split(',') }}"
+
+- name: root LUKS用crypttabのdesired optionを作成
+  ansible.builtin.set_fact:
+    luks_root_crypttab_options_desired: >-
+      {{ luks_root_crypttab_options
+         if 'fido2-device=auto' in luks_root_crypttab_options
+         else luks_root_crypttab_options + ['fido2-device=auto'] }}
+
+- name: dracut設定directoryを作成
+  ansible.builtin.file:
+    path: /etc/dracut.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: FIDO2 boot用dracut設定を配置
+  ansible.builtin.copy:
+    src: 90-secure-ipmi-terminal.conf
+    dest: /etc/dracut.conf.d/90-secure-ipmi-terminal.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: 現在のkernel向けdracut initramfsを再生成
+
+- name: root LUKSのcrypttabにFIDO2 unlockを設定
+  ansible.builtin.lineinfile:
+    path: /etc/crypttab
+    regexp: '^{{ luks_root_crypttab_fields[0] | regex_escape }}\s+'
+    line: >-
+      {{ luks_root_crypttab_fields[0] }} {{ luks_root_crypttab_fields[1] }} {{ luks_root_crypttab_fields[2] }} {{ luks_root_crypttab_options_desired | join(',') }}
+    backup: true
+  notify: 現在のkernel向けdracut initramfsを再生成
+
+- name: dracutを正式initramfs generatorとして導入
+  ansible.builtin.apt:
+    name: dracut
+    state: present
+  notify: 現在のkernel向けdracut initramfsを再生成
+
+- name: initramfs generatorのpackage状態を取得
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: dracutへ移行済みであることを確認
+  ansible.builtin.assert:
+    that:
+      - "'dracut' in ansible_facts.packages"
+      - "'initramfs-tools' not in ansible_facts.packages"
+    fail_msg: "dracutへのinitramfs generator移行が完了していません。"
+
+- name: pending handlerを実行してinitramfsを最新化
+  ansible.builtin.meta: flush_handlers
+
+- name: 現在のkernel向けinitramfsが存在することを確認
+  ansible.builtin.stat:
+    path: "/boot/initrd.img-{{ ansible_kernel }}"
+  register: luks_fido_initrd
+
+- name: 現在のkernel向けinitramfsがない場合は停止
+  ansible.builtin.assert:
+    that:
+      - luks_fido_initrd.stat.exists
+      - luks_fido_initrd.stat.isreg
+    fail_msg: "dracut生成の /boot/initrd.img-{{ ansible_kernel }} が存在しません。"
+
+- name: initramfsにFIDO2 boot componentsが含まれることを確認
+  ansible.builtin.shell: |
+    set -eu
+    image='/boot/initrd.img-{{ ansible_kernel }}'
+    listing="$(mktemp)"
+    trap 'rm -f "$listing"' 0 1 2 15
+    lsinitrd "$image" > "$listing"
+    grep -Fq 'usr/bin/systemd-cryptsetup' "$listing"
+    grep -Fq 'systemd-cryptsetup-generator' "$listing"
+    grep -Fq 'libcryptsetup-token-systemd-fido2.so' "$listing"
+    grep -Fq 'libfido2.so' "$listing"
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+- name: initramfs内crypttabにFIDO2 unlock設定が含まれることを確認
+  ansible.builtin.shell: |
+    set -eu
+    lsinitrd -f /etc/crypttab '/boot/initrd.img-{{ ansible_kernel }}' \
+      | awk -v wanted='{{ luks_root_crypttab_fields[0] }}' '
+          $1 == wanted {
+            count++
+            nopts = split($4, opts, ",")
+            for (i = 1; i <= nopts; i++) {
+              if (opts[i] == "fido2-device=auto") fido2 = 1
+              if (opts[i] == "x-initrd.attach") initrd_attach = 1
+            }
+          }
+          END {
+            if (count != 1) exit 1
+            if (fido2 != 1) exit 1
+            if (initrd_attach != 1) exit 1
+            exit 0
+          }
+        '
+  args:
+    executable: /bin/sh
+  changed_when: false

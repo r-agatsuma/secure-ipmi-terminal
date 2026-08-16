@@ -434,19 +434,15 @@ passwd -S sysadmin
 
 `finalize.yml`は日常の設定更新では再実行しません。以後の通常更新は`bootstrap.yml`と`configure.yml`を使用します。
 
-## 10. ROMED8 Auto-Typeを検証
+## 10. ROMED8 Auto-Typeの実機確認結果
 
-`ipmi`でGNOME/Xorgへログインします。
+ASRock Rack ROMED8-2TのHTML5 KVM（H5Viewer）に対して、KeePassXC Auto-Typeの標準設定で長いLUKSパスフレーズを正常に入力できることを実機確認済みです。
 
-1. KeePassXCにテスト用の長い文字列を登録
-2. Firefox ESRでROMED8-2TのHTML5 KVMを開く
-3. remote host側で入力結果を確認できる画面を用意
-4. KeePassXC Auto-Typeを実行
-5. 長い文字列で欠落・配列違い・記号化けがないことを確認
+- ROMED8-2T H5Viewerでは、通常はAuto-Type delayの調整は不要
+- 文字落ち、入力順序の乱れ、記号化けが発生する別環境では、その環境に合わせてAuto-Type delayを調整する
+- 特定のdelay値をこのCookbookの標準設定として固定しない
 
-Auto-Type delayの調整が必要な場合は、設定をその場で試し、安定値が分かったらGitHub Issueを作成してPRでCookbookへ反映します。
-
-ROMED8のLUKS unlock用途では速度より確実性を優先します。
+ROMED8のLUKS unlock用途では速度より入力の確実性を優先します。
 
 ## 11. 全体検証
 
@@ -471,7 +467,44 @@ sudo tests/verify.sh
 
 ## 日常運用・設定変更
 
-通常の変更フローは以下です。
+通常利用時の認証経路は以下です。
+
+```text
+電源ON
+  ↓
+root LUKS: FIDO2 PIN + touch
+  ↓
+GDM: ipmiでFIDO2 PIN + touch
+  ↓
+GNOME/Xorg
+  ├─ Firefox ESR
+  ├─ KeePassXC
+  └─ Terminal
+```
+
+OS管理が必要な場合は、GUIの`ipmi`セッションから管理権限を取得せず、`Ctrl+Alt+F3`等で別TTYへ移動します。TTY番号は環境によって異なるため固定しません。
+
+```text
+別TTY
+  ↓
+sysadmin: FIDO2 PIN + touch
+  ↓
+sudo: FIDO2 PIN + touch
+  ↓
+管理作業
+  ↓
+exit
+  ↓
+既存のGUIセッションへ戻る
+```
+
+- `ipmi`はGUI利用専用で、sudo不可
+- `sysadmin`はOS管理専用で、GDMからGUIログイン不可
+- `sudo`は`timestamp_timeout=0`のため、認証が必要な実行ごとにFIDO2 PIN + touchを要求する
+- GUIへ戻るTTY番号は環境依存なので、特定の番号を運用手順として固定しない
+- この端末では一般的なWeb閲覧、メール、開発作業などを行わない
+
+通常の設定変更フローは以下です。
 
 ```text
 問題/改善点を発見

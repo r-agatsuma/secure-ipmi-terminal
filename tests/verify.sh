@@ -121,6 +121,123 @@ else
     fail "systemd-cryptenroll unavailable"
 fi
 
+check_luks_fido_boot() {
+    crypttab_entry=$(awk '
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            nopts = split($4, opts, ",")
+            for (i = 1; i <= nopts; i++) {
+                if (opts[i] == "x-initrd.attach") {
+                    print $1 "\t" $2 "\t" $3 "\t" $4
+                    count++
+                }
+            }
+        }
+        END { if (count != 1) exit 1 }
+    ' /etc/crypttab 2>/dev/null) || {
+        fail "root LUKS crypttab entryを1件に特定できない"
+        return
+    }
+
+    crypt_name=$(printf '%s\n' "$crypttab_entry" | cut -f1)
+    crypt_source=$(printf '%s\n' "$crypttab_entry" | cut -f2)
+    crypt_options=$(printf '%s\n' "$crypttab_entry" | cut -f4)
+
+    case ",$crypt_options," in
+        *,fido2-device=auto,*) pass "/etc/crypttab FIDO2 unlock設定" ;;
+        *) fail "/etc/crypttabにfido2-device=autoがない" ;;
+    esac
+
+    case "$crypt_source" in
+        UUID=*) crypt_device="/dev/disk/by-uuid/${crypt_source#UUID=}" ;;
+        /dev/*) crypt_device="$crypt_source" ;;
+        *)
+            fail "未対応のcrypttab source: $crypt_source"
+            return
+            ;;
+    esac
+    crypt_device=$(readlink -f "$crypt_device" 2>/dev/null || true)
+
+    if [ -n "$crypt_device" ] && cryptsetup luksDump --dump-json-metadata "$crypt_device" 2>/dev/null \
+        | jq -e '[.tokens[]? | select(.type == "systemd-fido2")] | length > 0' >/dev/null 2>&1; then
+        pass "root LUKS2 systemd-fido2 token"
+    else
+        fail "root LUKS2 systemd-fido2 tokenを確認できない"
+    fi
+
+    if command -v dracut >/dev/null 2>&1 && command -v lsinitrd >/dev/null 2>&1; then
+        pass "dracut/lsinitrd available"
+    else
+        fail "dracut/lsinitrd unavailable"
+        return
+    fi
+
+    if dpkg-query -W -f='${db:Status-Abbrev}' dracut 2>/dev/null | grep -q '^ii'; then
+        pass "dracut installed"
+    else
+        fail "dracut package未導入"
+    fi
+
+    if dpkg-query -W -f='${db:Status-Abbrev}' initramfs-tools 2>/dev/null | grep -q '^ii'; then
+        fail "initramfs-toolsがまだinstalled状態"
+    else
+        pass "initramfs-toolsはactive generatorではない"
+    fi
+
+    if [ -f /etc/dracut.conf.d/90-secure-ipmi-terminal.conf ] && \
+       grep -q '^hostonly="yes"$' /etc/dracut.conf.d/90-secure-ipmi-terminal.conf && \
+       grep -q '^force_add_dracutmodules+=" fido2 systemd-cryptsetup "$' /etc/dracut.conf.d/90-secure-ipmi-terminal.conf; then
+        pass "secure-ipmi-terminal dracut設定"
+    else
+        fail "secure-ipmi-terminal dracut設定が不正"
+    fi
+
+    initrd="/boot/initrd.img-$(uname -r)"
+    if [ ! -f "$initrd" ]; then
+        fail "$initrd が存在しない"
+        return
+    fi
+
+    listing=$(mktemp)
+    if lsinitrd "$initrd" > "$listing" 2>/dev/null && \
+       grep -Fq 'usr/bin/systemd-cryptsetup' "$listing" && \
+       grep -Fq 'systemd-cryptsetup-generator' "$listing" && \
+       grep -Fq 'libcryptsetup-token-systemd-fido2.so' "$listing" && \
+       grep -Fq 'libfido2.so' "$listing"; then
+        pass "initramfs FIDO2 boot components"
+    else
+        fail "initramfs FIDO2 boot components不足"
+    fi
+    rm -f "$listing"
+
+    if lsinitrd -f /etc/crypttab "$initrd" 2>/dev/null | awk -v wanted="$crypt_name" '
+        $1 == wanted {
+            count++
+            nopts = split($4, opts, ",")
+            for (i = 1; i <= nopts; i++) {
+                if (opts[i] == "fido2-device=auto") fido2 = 1
+                if (opts[i] == "x-initrd.attach") initrd_attach = 1
+            }
+        }
+        END {
+            if (count != 1) exit 1
+            if (fido2 != 1) exit 1
+            if (initrd_attach != 1) exit 1
+            exit 0
+        }
+    '; then
+        pass "initramfs内crypttab FIDO2 unlock設定"
+    else
+        fail "initramfs内crypttab FIDO2 unlock設定が不正"
+    fi
+}
+
+if command -v dracut >/dev/null 2>&1 || [ -f /etc/dracut.conf.d/90-secure-ipmi-terminal.conf ]; then
+    check_luks_fido_boot
+else
+    warn "dracutによるLUKS FIDO2 boot未適用（finalize前なら正常）"
+fi
+
 printf '\nResult: PASS=%d WARN=%d FAIL=%d\n' "$PASS" "$WARN" "$FAIL"
 
 if [ "$FAIL" -ne 0 ]; then

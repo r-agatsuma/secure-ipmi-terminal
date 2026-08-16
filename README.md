@@ -27,8 +27,10 @@
 - Disk: LUKS2 + YubiKey FIDO2
   - 標準構成ではYubiKey 1本を登録する
   - 2本目のYubiKeyは可用性を上げたい場合のみ任意で追加する
+  - Debian Installer標準の`initramfs-tools`ではなく、Debian stableの`dracut` + `systemd-cryptsetup`でearly bootを構成する
+  - `dracut`の`fido2` moduleを明示的に組み込み、LUKS2の`systemd-fido2` tokenをboot時に利用する
   - 端末内データの救出は要件にせず、YubiKeyの故障・紛失時は再インストールを許容する
-  - ただしroot LUKSのFIDO2 boot unlockはDebianのinitramfs実装差があるため、初期パスフレーズは実機でFIDO2起動確認が完了するまで削除しない
+  - Installer時のLUKSパスフレーズは、FIDO2 cold bootとinitramfs再生成を実機確認した後に別工程で削除する
 - Tailscale
   - native `tailscaled`
   - 既存OpenWrt subnet routerの経路を受け取るクライアント
@@ -251,29 +253,101 @@ sudo chmod 0600 /etc/u2f_mappings
 rm -f /tmp/sysadmin.u2f /tmp/ipmi.u2f
 ```
 
-## 6. FIDO2 PAM設定を投入（まだパスワードはロックしない）
+## 6. LUKS2へYubiKey FIDO2を登録
+
+`finalize.yml`は、root LUKS2に`systemd-fido2` tokenが登録済みであることを確認してからdracutへ移行します。先にYubiKeyをLUKS2へ登録してください。
+
+まずroot LUKS entryを確認します。Debian Installerのroot暗号化では、通常`/etc/crypttab`の`x-initrd.attach`付きentryが対象です。
+
+```bash
+lsblk -f
+cat /etc/crypttab
+```
+
+対象を例として `/dev/nvme0n1p3` とした場合、標準構成のYubiKey 1本を登録します。PIN + touchを明示的に要求し、biometric等のFIDO2 User Verificationは要求しません。
+
+```bash
+sudo systemd-cryptenroll \
+  --fido2-device=auto \
+  --fido2-with-client-pin=yes \
+  --fido2-with-user-presence=yes \
+  --fido2-with-user-verification=no \
+  /dev/nvme0n1p3
+```
+
+2本目を使う場合だけYubiKeyを差し替えて、同じコマンドをもう一度実行します。
+
+登録後、LUKS2 tokenから正しいvolume keyを導出できることを、mapperを新規作成せずに確認します。
+
+```bash
+sudo cryptsetup open \
+  --type luks2 \
+  --test-passphrase \
+  --token-only \
+  --token-type systemd-fido2 \
+  /dev/nvme0n1p3
+
+echo $?
+```
+
+FIDO2 PIN + touch後に終了statusが`0`になることを確認します。
+
+**Installer時のLUKSパスフレーズはまだ削除しません。** また、この段階では`/etc/crypttab`やinitramfsを手作業で変更しません。以降はAnsibleがdesired stateへ収束させます。
+
+## 7. finalizeを適用（PAM + LUKS FIDO2 boot）
 
 ```bash
 sudo ansible-playbook finalize.yml
 ```
 
-この時点では以下のPAM policyが入りますが、`sysadmin`の一時UNIXパスワードはまだ残っています。
+この時点では`sysadmin`の一時UNIXパスワードを残したまま、以下を反映します。
 
-- `gdm-password`: `ipmi`のみ + FIDO2 PIN/touch
-- `login`: `sysadmin`のみ + FIDO2 PIN/touch
-- `sudo`: `sysadmin`のみ + FIDO2 PIN/touch
+- PAM
+  - `gdm-password`: `ipmi`のみ + FIDO2 PIN/touch
+  - `login`: `sysadmin`のみ + FIDO2 PIN/touch
+  - `sudo`: `sysadmin`のみ + FIDO2 PIN/touch
+- LUKS FIDO2 boot
+  - root LUKS2の`systemd-fido2` tokenが存在することを事前確認
+  - `/etc/dracut.conf.d/90-secure-ipmi-terminal.conf`を配置
+  - host-only dracut initramfsへ`fido2`と`systemd-cryptsetup`を強制追加
+  - root LUKSの`/etc/crypttab`へ`fido2-device=auto`を冪等に追加
+  - Debianの正式initramfs generatorを`initramfs-tools`から`dracut`へ移行
+  - 現在のkernel向けinitramfsを必要時だけ再生成
+  - initramfs内のFIDO2 library / systemd-cryptsetup / crypttabを静的検証
+
+Debian Installer標準のencrypted-rootは`initramfs-tools` + `cryptsetup-initramfs`経路を使います。この経路では`systemd-cryptenroll`で登録した`systemd-fido2` tokenがearly bootで利用されないため、このCookbookではDebian stableの`dracut`へ移行します。
+
+`dracut` packageは`initramfs-tools`と競合するため、導入時に`initramfs-tools`本体が削除されます。`initramfs-tools-core`等が自動削除候補として残っても、このCookbookでは`apt autoremove`を自動実行しません。
+
+`finalize.yml`がdracut/initramfsの静的検証で失敗した場合は、原因を解決するまでrebootせず、UNIX passwordもロックしません。running system上で修正してから再実行します。
 
 PAM policy本体は`/etc/pam.d/secure-ipmi-terminal-*`へ分離し、各service fileから`@include`します。専用policyのincludeは必ず`@include common-auth`より前に配置します。
 
-FIDO2が成功すれば従来のpassword stackへ進まず認証成功します。FIDO2が失敗した場合は、最終ロック前であれば従来のUNIX passwordへfallbackできます。
+旧Cookbookで`# BEGIN secure-ipmi-terminal FIDO2` blockを直接埋め込んでいた環境では、`finalize.yml`の再実行時に専用include方式へ移行します。
 
-旧Cookbookで`# BEGIN secure-ipmi-terminal FIDO2` blockを直接埋め込んでいた環境では、`finalize.yml`の再実行時に専用include方式へ移行します。Debian 13の`/etc/pam.d/login`には`#%PAM-1.0`がないため旧方式ではFIDO2 blockが末尾へ入り、UNIX passwordの後にFIDO2が実行される場合がありました。
+## 8. cold bootとPAM認証を検証
 
-## 7. PAM認証を検証
+`finalize.yml`が成功したら、**まだUNIX passwordをロックせず**通常のGRUB entryから再起動します。
 
-現在の`sysadmin`セッションは閉じないでください。
+```bash
+sudo reboot
+```
 
-まずPAM単体で確認します。
+root LUKS unlockが以下の順序になることを確認します。
+
+```text
+FIDO2 PIN
+↓
+touch
+↓
+root LUKS unlock
+↓
+GDM
+```
+
+FIDO2 tokenを利用できない場合に備え、Installer時のLUKSパスフレーズはこの段階でも残します。
+
+boot後、現在の`sysadmin`セッションは閉じずにPAM単体を確認します。
 
 ```bash
 sudo pamtester login sysadmin authenticate
@@ -281,9 +355,7 @@ sudo pamtester gdm-password ipmi authenticate
 sudo pamtester sudo sysadmin authenticate
 ```
 
-いずれもYubiKey PIN + touchで成功することを確認します。
-
-続いてsudo自体を確認します。
+続いてsudoを確認します。
 
 ```bash
 sudo -k
@@ -292,9 +364,7 @@ sudo true
 
 FIDO2 PIN + touchが要求され、UNIX passwordを要求されないことを確認します。
 
-続いて**passwordをロックする前に実TTYログインを確認**します。現在の`sysadmin`セッションは残したまま、`Ctrl+Alt+F3`等で別TTYへ移動し、`sysadmin`でログインします。
-
-期待する認証順序は以下です。
+別TTYへ移動し、`sysadmin`でも確認します。TTY番号は環境によって異なるため固定しません。
 
 ```text
 login: sysadmin
@@ -302,7 +372,7 @@ FIDO2 PIN
 touch
 ```
 
-UNIX `Password:`を要求されず、FIDO2 PIN + touchだけでshellへ入れることを確認します。`Password:`が先に表示される場合はPAMの認証順序が誤っているため、**passwordをロックせず**Issueとして調査します。TTY番号は環境によって異なるため固定しません。
+UNIX `Password:`を要求される場合は、passwordをロックせずPAM設定を調査します。
 
 ### Xorg確認
 
@@ -320,9 +390,9 @@ x11
 
 `sysadmin`はGDMからGUIログインできないことも確認します。
 
-## 8. UNIX passwordを最終ロック
+## 9. UNIX passwordを最終ロック
 
-上記が全て成功した場合だけ実行します。
+cold bootとPAM認証がすべて成功した場合だけ実行します。
 
 念のため、実行前に別TTYで一時的なroot shellを開いたままにしておくと、PAM設定ミス時に復旧しやすくなります。
 
@@ -337,7 +407,7 @@ cd ~/secure-ipmi-terminal
 sudo ansible-playbook finalize.yml -e lock_passwords=true
 ```
 
-これによりroot/sysadmin/ipmiのUNIX passwordをlockします。
+これによりroot/sysadmin/ipmiのUNIX passwordをlockします。`finalize.yml`はLUKS/dracut設定も再検証しますが、desired stateが変わっていなければ不要なinitramfs再生成は行いません。
 
 ロック後、再度以下を確認します。
 
@@ -348,39 +418,7 @@ sudo true
 
 別TTYでも`sysadmin` + FIDO2 PIN/touchでログインできることを確認し、問題がなければ一時root shellを閉じます。
 
-## 9. LUKS2へYubiKey FIDO2を登録
-
-**この工程は初期repoでは自動化しません。** boot/initramfsを壊した場合の影響が大きく、実機を見ながら行うためです。
-
-まず対象LUKSデバイスを確認します。
-
-```bash
-lsblk -f
-cat /etc/crypttab
-sudo systemd-cryptenroll --list-devices
-```
-
-対象を例として `/dev/nvme0n1p3` とした場合、まず標準構成のYubiKey 1本を登録します。
-
-```bash
-sudo systemd-cryptenroll --fido2-device=auto /dev/nvme0n1p3
-```
-
-2本目のYubiKeyを使う場合は任意で差し替えて、もう一度実行します。1本運用の場合はこの操作をスキップします。
-
-```bash
-sudo systemd-cryptenroll --fido2-device=auto /dev/nvme0n1p3
-```
-
-### 重要: Debianのroot initramfs
-
-`systemd-cryptenroll`はLUKS2へFIDO2 tokenを登録できますが、Debian Installer標準のroot暗号化は`cryptsetup-initramfs`系のearly bootを使う場合があり、systemdの`fido2-device=`をそのままboot時に利用できるとは限りません。
-
-そのため初回構築では**一時LUKSパスフレーズを残したまま再起動し、FIDO2でroot unlockできるかを実機確認**します。
-
-FIDO2 promptが出ない場合は、その場で構成を確認して修正します。この状態でも一時パスフレーズが残っているためboot不能にはなりません。
-
-標準構成では登録したYubiKey 1本でboot unlockを確認してから、初期パスフレーズkeyslotを削除します。2本目を登録した場合は、両方でboot unlockできることを確認してから削除します。削除作業は実機確認後に行います。
+**Installer時のLUKSパスフレーズkeyslot削除は別工程です。** FIDO2 cold bootとdracutによるinitramfs再生成を確認するまでは削除しません。
 
 ## 10. ROMED8 Auto-Typeを検証
 
@@ -406,6 +444,7 @@ sudo tests/verify.sh
 
 手動確認項目:
 
+- root LUKS: 通常GRUB entryからFIDO2 PIN + touchでcold boot可能
 - `ipmi` GUI login: FIDO2 PIN + touch
 - `sysadmin` TTY login: FIDO2 PIN + touch
 - `sysadmin` sudo: 毎回FIDO2 PIN + touch
@@ -415,7 +454,6 @@ sudo tests/verify.sh
 - Tailscale経由でOpenWrt配下のBMCへ接続可能
 - Tailnetから管理端末への不要なincoming connectionがshields-upで拒否される
 - ROMED8 HTML5 KVMへのAuto-Typeが安定する
-- LUKS FIDO2 boot unlockは登録したYubiKeyで確認する（2本目を登録した場合は両方で確認）
 
 ## 日常運用・設定変更
 

@@ -47,6 +47,7 @@
 
   roles:
     - fido-auth
+    - luks-fido
     - privilege
 
   post_tasks:
@@ -64,8 +65,9 @@
     - name: 最終ロック前の案内
       ansible.builtin.debug:
         msg:
-          - "PAM設定を反映しました。まだsysadminのUNIXパスワードはロックしていません。"
-          - "READMEのpamtester手順に加え、実TTYでsysadminがUNIX passwordなしのFIDO2 PIN+touchだけでログインできることを確認してください。"
+          - "PAM設定とdracutによるLUKS FIDO2 boot設定を反映しました。まだsysadminのUNIXパスワードはロックしていません。"
+          - "まず通常GRUB entryからcold bootし、root LUKSがFIDO2 PIN+touchで解錠できることを確認してください。"
+          - "続いて実TTYでsysadminがUNIX passwordなしのFIDO2 PIN+touchだけでログインできることを確認してください。"
           - "sudoも sudo -k の後にFIDO2 PIN+touchだけで成功することを確認してください。"
-          - "問題なければ: sudo ansible-playbook finalize.yml -e lock_passwords=true"
+          - "すべて問題なければ: sudo ansible-playbook finalize.yml -e lock_passwords=true"
       when: not (lock_passwords | bool)

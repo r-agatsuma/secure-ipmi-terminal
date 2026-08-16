@@ -1,0 +1,9 @@
+---
+- name: 現在のkernel向けdracut initramfsを再生成
+  ansible.builtin.command:
+    argv:
+      - dracut
+      - --force
+      - "/boot/initrd.img-{{ ansible_kernel }}"
+      - "{{ ansible_kernel }}"
+  changed_when: true

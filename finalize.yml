@@ -65,6 +65,7 @@
       ansible.builtin.debug:
         msg:
           - "PAM設定を反映しました。まだsysadminのUNIXパスワードはロックしていません。"
-          - "READMEのpamtester手順で sysadmin/login, ipmi/gdm-password, sysadmin/sudo を確認してください。"
+          - "READMEのpamtester手順に加え、実TTYでsysadminがUNIX passwordなしのFIDO2 PIN+touchだけでログインできることを確認してください。"
+          - "sudoも sudo -k の後にFIDO2 PIN+touchだけで成功することを確認してください。"
           - "問題なければ: sudo ansible-playbook finalize.yml -e lock_passwords=true"
       when: not (lock_passwords | bool)

@@ -40,6 +40,9 @@
   - inbound原則drop / outbound許可
   - 厳格なegress whitelistは行わない
 - 設定管理: local Ansible
+  - PAM policy本体は`/etc/pam.d/secure-ipmi-terminal-*`としてAnsibleが管理する
+  - Debian標準のPAM service fileには、`common-auth`より前へ専用policyの`@include`だけを追加する
+  - distro管理ファイルへの変更量を小さくし、認証順序を明示的に検証する
 - 秘密情報はGitに保存しない
 
 ## リポジトリ
@@ -260,7 +263,11 @@ sudo ansible-playbook finalize.yml
 - `login`: `sysadmin`のみ + FIDO2 PIN/touch
 - `sudo`: `sysadmin`のみ + FIDO2 PIN/touch
 
+PAM policy本体は`/etc/pam.d/secure-ipmi-terminal-*`へ分離し、各service fileから`@include`します。専用policyのincludeは必ず`@include common-auth`より前に配置します。
+
 FIDO2が成功すれば従来のpassword stackへ進まず認証成功します。FIDO2が失敗した場合は、最終ロック前であれば従来のUNIX passwordへfallbackできます。
+
+旧Cookbookで`# BEGIN secure-ipmi-terminal FIDO2` blockを直接埋め込んでいた環境では、`finalize.yml`の再実行時に専用include方式へ移行します。Debian 13の`/etc/pam.d/login`には`#%PAM-1.0`がないため旧方式ではFIDO2 blockが末尾へ入り、UNIX passwordの後にFIDO2が実行される場合がありました。
 
 ## 7. PAM認証を検証
 
@@ -283,7 +290,19 @@ sudo -k
 sudo true
 ```
 
-FIDO2 PIN + touchが要求されることを確認します。
+FIDO2 PIN + touchが要求され、UNIX passwordを要求されないことを確認します。
+
+続いて**passwordをロックする前に実TTYログインを確認**します。現在の`sysadmin`セッションは残したまま、`Ctrl+Alt+F3`等で別TTYへ移動し、`sysadmin`でログインします。
+
+期待する認証順序は以下です。
+
+```text
+login: sysadmin
+FIDO2 PIN
+touch
+```
+
+UNIX `Password:`を要求されず、FIDO2 PIN + touchだけでshellへ入れることを確認します。`Password:`が先に表示される場合はPAMの認証順序が誤っているため、**passwordをロックせず**Issueとして調査します。TTY番号は環境によって異なるため固定しません。
 
 ### Xorg確認
 

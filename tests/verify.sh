@@ -60,13 +60,54 @@ else
     warn "/etc/u2f_mappings未作成（finalize前なら正常）"
 fi
 
-for pamfile in /etc/pam.d/gdm-password /etc/pam.d/login /etc/pam.d/sudo; do
-    if grep -q 'secure-ipmi-terminal FIDO2' "$pamfile" 2>/dev/null; then
-        pass "$pamfile FIDO2 policy"
+check_pam_policy() {
+    policy_file=$1
+    expected_user=$2
+
+    if grep -Eq "^auth[[:space:]]+requisite[[:space:]]+pam_succeed_if\.so[[:space:]]+quiet[[:space:]]+user[[:space:]]+=[[:space:]]+$expected_user$" "$policy_file" 2>/dev/null && \
+       grep -Eq '^auth[[:space:]]+sufficient[[:space:]]+pam_u2f\.so .*authfile=/etc/u2f_mappings .*origin=pam://secure-ipmi-terminal .*appid=pam://secure-ipmi-terminal .*pinverification=1 .*userverification=0 .*userpresence=1$' "$policy_file" 2>/dev/null; then
+        pass "$policy_file FIDO2 policy content"
     else
-        warn "$pamfile FIDO2 policy未適用（finalize前なら正常）"
+        fail "$policy_file FIDO2 policy content invalid"
     fi
-done
+}
+
+check_pam_include() {
+    pamfile=$1
+    include_name=$2
+
+    if awk -v wanted="@include $include_name" '
+        $0 == wanted { include_count++; include_line=NR }
+        $0 ~ /^@include[[:space:]]+common-auth$/ && common_line == 0 { common_line=NR }
+        /^# (BEGIN|END) secure-ipmi-terminal FIDO2$/ { legacy=1 }
+        END {
+            if (include_count != 1) exit 1
+            if (include_line <= 0) exit 1
+            if (common_line <= 0) exit 1
+            if (include_line >= common_line) exit 1
+            if (legacy == 1) exit 1
+            exit 0
+        }
+    ' "$pamfile" 2>/dev/null; then
+        pass "$pamfile FIDO2 include order"
+    else
+        fail "$pamfile FIDO2 include order invalid"
+    fi
+}
+
+if [ -f /etc/pam.d/secure-ipmi-terminal-gdm ] && \
+   [ -f /etc/pam.d/secure-ipmi-terminal-login ] && \
+   [ -f /etc/pam.d/secure-ipmi-terminal-sudo ]; then
+    pass "secure-ipmi-terminal PAM policy files exist"
+    check_pam_policy /etc/pam.d/secure-ipmi-terminal-gdm ipmi
+    check_pam_policy /etc/pam.d/secure-ipmi-terminal-login sysadmin
+    check_pam_policy /etc/pam.d/secure-ipmi-terminal-sudo sysadmin
+    check_pam_include /etc/pam.d/gdm-password secure-ipmi-terminal-gdm
+    check_pam_include /etc/pam.d/login secure-ipmi-terminal-login
+    check_pam_include /etc/pam.d/sudo secure-ipmi-terminal-sudo
+else
+    warn "secure-ipmi-terminal PAM policy未適用（finalize前なら正常）"
+fi
 
 if tailscale status >/dev/null 2>&1; then
     pass "Tailscale node authenticated"

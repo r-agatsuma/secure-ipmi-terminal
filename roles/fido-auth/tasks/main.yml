@@ -6,35 +6,83 @@
     group: root
     mode: '0600'
 
-- name: GDMはipmiユーザーのみ許可しFIDO2 PIN+touchで認証
-  ansible.builtin.blockinfile:
-    path: /etc/pam.d/gdm-password
-    insertafter: '^#%PAM-1.0'
-    marker: '# {mark} secure-ipmi-terminal FIDO2'
-    block: |
-      # GUIログインはipmiだけに限定する。
-      auth requisite pam_succeed_if.so quiet user = ipmi
-      # FIDO2 PIN(User Verification) + touch(User Presence)を要求する。
-      auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1
-    backup: true
+- name: 管理対象PAM serviceにcommon-auth anchorが存在することを確認
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -Eq
+      - '^@include[[:space:]]+common-auth$'
+      - "/etc/pam.d/{{ item }}"
+  loop:
+    - gdm-password
+    - login
+    - sudo
+  changed_when: false
 
-- name: TTYログインはsysadminユーザーのみ許可しFIDO2 PIN+touchで認証
-  ansible.builtin.blockinfile:
-    path: /etc/pam.d/login
-    insertafter: '^#%PAM-1.0'
-    marker: '# {mark} secure-ipmi-terminal FIDO2'
-    block: |
-      # TTYログインはsysadminだけに限定する。
-      auth requisite pam_succeed_if.so quiet user = sysadmin
-      auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1
-    backup: true
+- name: secure-ipmi-terminal専用PAM policyを配置
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "/etc/pam.d/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - src: secure-ipmi-terminal-gdm
+      dest: secure-ipmi-terminal-gdm
+    - src: secure-ipmi-terminal-login
+      dest: secure-ipmi-terminal-login
+    - src: secure-ipmi-terminal-sudo
+      dest: secure-ipmi-terminal-sudo
 
-- name: sudoはsysadminユーザーのみ許可しFIDO2 PIN+touchで認証
+- name: password stackより前にsecure-ipmi-terminal PAM policyをinclude
   ansible.builtin.blockinfile:
-    path: /etc/pam.d/sudo
-    insertafter: '^#%PAM-1.0'
-    marker: '# {mark} secure-ipmi-terminal FIDO2'
+    path: "/etc/pam.d/{{ item.service }}"
+    insertbefore: '^@include\s+common-auth$'
+    marker: '# {mark} secure-ipmi-terminal auth include'
     block: |
-      auth requisite pam_succeed_if.so quiet user = sysadmin
-      auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1
+      @include {{ item.include }}
     backup: true
+  loop:
+    - service: gdm-password
+      include: secure-ipmi-terminal-gdm
+    - service: login
+      include: secure-ipmi-terminal-login
+    - service: sudo
+      include: secure-ipmi-terminal-sudo
+
+- name: 旧inline FIDO2 blockを削除
+  ansible.builtin.blockinfile:
+    path: "/etc/pam.d/{{ item }}"
+    marker: '# {mark} secure-ipmi-terminal FIDO2'
+    state: absent
+    backup: true
+  loop:
+    - gdm-password
+    - login
+    - sudo
+
+- name: PAM includeがcommon-authより前に1回だけ存在することを確認
+  ansible.builtin.shell: |
+    awk -v wanted='@include {{ item.include }}' '
+      $0 == wanted { include_count++; include_line=NR }
+      $0 ~ /^@include[[:space:]]+common-auth$/ && common_line == 0 { common_line=NR }
+      /^# (BEGIN|END) secure-ipmi-terminal FIDO2$/ { legacy=1 }
+      END {
+        if (include_count != 1) exit 1
+        if (include_line <= 0) exit 1
+        if (common_line <= 0) exit 1
+        if (include_line >= common_line) exit 1
+        if (legacy == 1) exit 1
+        exit 0
+      }
+    ' "/etc/pam.d/{{ item.service }}"
+  args:
+    executable: /bin/sh
+  loop:
+    - service: gdm-password
+      include: secure-ipmi-terminal-gdm
+    - service: login
+      include: secure-ipmi-terminal-login
+    - service: sudo
+      include: secure-ipmi-terminal-sudo
+  changed_when: false

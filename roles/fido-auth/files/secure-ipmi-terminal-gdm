@@ -1,0 +1,4 @@
+# secure-ipmi-terminal: GDM GUIログインはipmiだけに限定する。
+auth requisite pam_succeed_if.so quiet user = ipmi
+# FIDO2 PIN(User Verification) + touch(User Presence)を要求する。
+auth sufficient pam_u2f.so authfile=/etc/u2f_mappings origin=pam://secure-ipmi-terminal appid=pam://secure-ipmi-terminal cue pinverification=1 userverification=0 userpresence=1

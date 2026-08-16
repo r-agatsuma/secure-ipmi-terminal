@@ -81,13 +81,12 @@ check_pam_include() {
         $0 ~ /^@include[[:space:]]+common-auth$/ && common_line == 0 { common_line=NR }
         /^# (BEGIN|END) secure-ipmi-terminal FIDO2$/ { legacy=1 }
         END {
-            exit !(
-                include_count == 1 &&
-                include_line > 0 &&
-                common_line > 0 &&
-                include_line < common_line &&
-                legacy != 1
-            )
+            if (include_count != 1) exit 1
+            if (include_line <= 0) exit 1
+            if (common_line <= 0) exit 1
+            if (include_line >= common_line) exit 1
+            if (legacy == 1) exit 1
+            exit 0
         }
     ' "$pamfile" 2>/dev/null; then
         pass "$pamfile FIDO2 include order"

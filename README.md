@@ -30,7 +30,7 @@
   - Debian Installer標準の`initramfs-tools`ではなく、Debian stableの`dracut` + `systemd-cryptsetup`でearly bootを構成する
   - `dracut`の`fido2` moduleを明示的に組み込み、LUKS2の`systemd-fido2` tokenをboot時に利用する
   - 端末内データの救出は要件にせず、YubiKeyの故障・紛失時は再インストールを許容する
-  - Installer時のLUKSパスフレーズは、FIDO2 cold bootとinitramfs再生成を実機確認した後に別工程で削除する
+  - Installer時のLUKSパスフレーズはFIDO2 cold boot確認まで残し、最終commitでtraditional password slotごと削除する
 - Tailscale
   - native `tailscaled`
   - 既存OpenWrt subnet routerの経路を受け取るクライアント
@@ -42,6 +42,9 @@
   - inbound原則drop / outbound許可
   - 厳格なegress whitelistは行わない
 - 設定管理: local Ansible
+  - `bootstrap.yml`: OS基盤を構築する
+  - `configure.yml`: enrollment済みFIDO2 credentialをPAM/LUKSの認証経路へ接続する
+  - `finalize.yml`: 明示flag付きで旧password credentialを廃止する一回限りのcommit操作
   - PAM policy本体は`/etc/pam.d/secure-ipmi-terminal-*`としてAnsibleが管理する
   - Debian標準のPAM service fileには、`common-auth`より前へ専用policyの`@include`だけを追加する
   - distro管理ファイルへの変更量を小さくし、認証順序を明示的に検証する
@@ -255,7 +258,7 @@ rm -f /tmp/sysadmin.u2f /tmp/ipmi.u2f
 
 ## 6. LUKS2へYubiKey FIDO2を登録
 
-`finalize.yml`は、root LUKS2に`systemd-fido2` tokenが登録済みであることを確認してからdracutへ移行します。先にYubiKeyをLUKS2へ登録してください。
+`configure.yml`は、root LUKS2に`systemd-fido2` tokenが登録済みであることを確認してからdracutへ移行します。先にYubiKeyをLUKS2へ登録してください。
 
 まずroot LUKS entryを確認します。Debian Installerのroot暗号化では、通常`/etc/crypttab`の`x-initrd.attach`付きentryが対象です。
 
@@ -275,7 +278,7 @@ sudo systemd-cryptenroll \
   /dev/nvme0n1p3
 ```
 
-2本目を使う場合だけYubiKeyを差し替えて、同じコマンドをもう一度実行します。
+2本目を使う場合だけYubiKeyを差し替えて、同じコマンドをもう一度実行します。追加するFIDO2 keyは`finalize.yml`でtraditional password slotを削除する前に登録してください。
 
 登録後、LUKS2 tokenから正しいvolume keyを導出できることを、mapperを新規作成せずに確認します。
 
@@ -294,13 +297,13 @@ FIDO2 PIN + touch後に終了statusが`0`になることを確認します。
 
 **Installer時のLUKSパスフレーズはまだ削除しません。** また、この段階では`/etc/crypttab`やinitramfsを手作業で変更しません。以降はAnsibleがdesired stateへ収束させます。
 
-## 7. finalizeを適用（PAM + LUKS FIDO2 boot）
+## 7. configureを適用（PAM + LUKS FIDO2 boot）
 
 ```bash
-sudo ansible-playbook finalize.yml
+sudo ansible-playbook configure.yml
 ```
 
-この時点では`sysadmin`の一時UNIXパスワードを残したまま、以下を反映します。
+`configure.yml`は新しいFIDO2認証経路を有効化する非破壊フェーズです。この時点では`sysadmin`の一時UNIXパスワードとInstaller時のLUKSパスフレーズを残したまま、以下を反映します。
 
 - PAM
   - `gdm-password`: `ipmi`のみ + FIDO2 PIN/touch
@@ -319,15 +322,15 @@ Debian Installer標準のencrypted-rootは`initramfs-tools` + `cryptsetup-initra
 
 `dracut` packageは`initramfs-tools`と競合するため、導入時に`initramfs-tools`本体が削除されます。`initramfs-tools-core`等が自動削除候補として残っても、このCookbookでは`apt autoremove`を自動実行しません。
 
-`finalize.yml`がdracut/initramfsの静的検証で失敗した場合は、原因を解決するまでrebootせず、UNIX passwordもロックしません。running system上で修正してから再実行します。
+`configure.yml`がdracut/initramfsの静的検証で失敗した場合は、原因を解決するまでrebootせず、旧password credentialも廃止しません。running system上で修正してから再実行します。
 
 PAM policy本体は`/etc/pam.d/secure-ipmi-terminal-*`へ分離し、各service fileから`@include`します。専用policyのincludeは必ず`@include common-auth`より前に配置します。
 
-旧Cookbookで`# BEGIN secure-ipmi-terminal FIDO2` blockを直接埋め込んでいた環境では、`finalize.yml`の再実行時に専用include方式へ移行します。
+旧Cookbookで`# BEGIN secure-ipmi-terminal FIDO2` blockを直接埋め込んでいた環境では、`configure.yml`の実行時に専用include方式へ移行します。
 
 ## 8. cold bootとPAM認証を検証
 
-`finalize.yml`が成功したら、**まだUNIX passwordをロックせず**通常のGRUB entryから再起動します。
+`configure.yml`が成功したら、**まだ旧password credentialを廃止せず**通常のGRUB entryから再起動します。
 
 ```bash
 sudo reboot
@@ -390,35 +393,46 @@ x11
 
 `sysadmin`はGDMからGUIログインできないことも確認します。
 
-## 9. UNIX passwordを最終ロック
+## 9. FIDO2-only構成へfinalize
 
-cold bootとPAM認証がすべて成功した場合だけ実行します。
+cold bootとPAM認証がすべて成功した場合だけ、一回限りのcommitとして実行します。
 
-念のため、実行前に別TTYで一時的なroot shellを開いたままにしておくと、PAM設定ミス時に復旧しやすくなります。
-
-```bash
-sudo -i
-```
-
-そのroot shellは閉じず、別の`sysadmin`端末から以下を実行します。
+`finalize.yml`は通常の設定再適用用playbookではありません。明示flagなしでは停止します。
 
 ```bash
-cd ~/secure-ipmi-terminal
-sudo ansible-playbook finalize.yml -e lock_passwords=true
+sudo ansible-playbook finalize.yml -e finalize_credentials=true
 ```
 
-これによりroot/sysadmin/ipmiのUNIX passwordをlockします。`finalize.yml`はLUKS/dracut設定も再検証しますが、desired stateが変わっていなければ不要なinitramfs再生成は行いません。
+このcommitでは以下を実行します。
 
-ロック後、再度以下を確認します。
+- root / `ipmi` / `sysadmin` のUNIX passwordをlock
+- root LUKS2のtraditional password slotを`systemd-cryptenroll --wipe-slot=password`で削除
+- FIDO2 tokenが削除後も1個以上残っていることを確認
+
+`--wipe-slot=password`は特定のslot番号を推測せず、traditional password credentialに対応するslotを対象にします。FIDO2 tokenが1本でも複数でも、この方針は変わりません。
+
+このCookbookでは古いLUKS header backupを恒久保存しません。最終構成はFIDO2-onlyとし、YubiKey紛失・故障やFIDO2 boot経路の破損でroot LUKSを解錠できなくなった場合はDebianを再インストールします。
+
+finalize後、現在のsessionを閉じる前にsudoを確認します。
 
 ```bash
 sudo -k
 sudo true
 ```
 
-別TTYでも`sysadmin` + FIDO2 PIN/touchでログインできることを確認し、問題がなければ一時root shellを閉じます。
+別TTYでも`sysadmin` + FIDO2 PIN/touchで新規ログインできることを確認します。
 
-**Installer時のLUKSパスフレーズkeyslot削除は別工程です。** FIDO2 cold bootとdracutによるinitramfs再生成を確認するまでは削除しません。
+UNIX passwordのlock状態は以下で確認できます。
+
+```bash
+passwd -S root
+passwd -S ipmi
+passwd -S sysadmin
+```
+
+最後に通常GRUB entryからcold bootし、FIDO2 PIN + touchでroot LUKSを解錠してGDMまで起動できることを確認します。Installer時のLUKSパスフレーズは、この時点ではrecovery手段として利用できません。
+
+`finalize.yml`は日常の設定更新では再実行しません。以後の通常更新は`bootstrap.yml`と`configure.yml`を使用します。
 
 ## 10. ROMED8 Auto-Typeを検証
 
@@ -483,9 +497,11 @@ verify
 cd ~/secure-ipmi-terminal
 git pull
 sudo ansible-playbook bootstrap.yml
-sudo ansible-playbook finalize.yml
+sudo ansible-playbook configure.yml
 sudo tests/verify.sh
 ```
+
+`finalize.yml`はFIDO2-onlyへ移行する一回限りのcommit操作なので、日常の再適用には含めません。
 
 `sudo`は毎回FIDO2認証されますが、`ansible-playbook`自体をrootとして起動するため、playbook内の各taskごとにFIDO2を要求されることはありません。
 

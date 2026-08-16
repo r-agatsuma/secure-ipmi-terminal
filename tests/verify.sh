@@ -34,6 +34,15 @@ done
 if getent passwd sysadmin >/dev/null; then pass "sysadminユーザーが存在"; else fail "sysadminユーザーが存在しない"; fi
 if getent passwd ipmi >/dev/null; then pass "ipmiユーザーが存在"; else fail "ipmiユーザーが存在しない"; fi
 
+for user in root ipmi sysadmin; do
+    password_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+    if [ "$password_status" = "L" ]; then
+        pass "$user UNIX password locked"
+    else
+        warn "$user UNIX password未ロック（finalize前なら正常）"
+    fi
+done
+
 if id -nG sysadmin 2>/dev/null | tr ' ' '\n' | grep -qx sudo; then pass "sysadminはsudoグループ所属"; else fail "sysadminがsudoグループにいない"; fi
 if id -nG ipmi 2>/dev/null | tr ' ' '\n' | grep -qx sudo; then fail "ipmiがsudoグループに所属している"; else pass "ipmiはsudoグループ非所属"; fi
 
@@ -57,7 +66,7 @@ if [ -f /etc/u2f_mappings ]; then
     pass "/etc/u2f_mappings exists"
     if grep -q '^sysadmin:' /etc/u2f_mappings && grep -q '^ipmi:' /etc/u2f_mappings; then pass "sysadmin/ipmi FIDO mapping exists"; else fail "FIDO mapping不足"; fi
 else
-    warn "/etc/u2f_mappings未作成（finalize前なら正常）"
+    warn "/etc/u2f_mappings未作成（configure前なら正常）"
 fi
 
 check_pam_policy() {
@@ -106,7 +115,7 @@ if [ -f /etc/pam.d/secure-ipmi-terminal-gdm ] && \
     check_pam_include /etc/pam.d/login secure-ipmi-terminal-login
     check_pam_include /etc/pam.d/sudo secure-ipmi-terminal-sudo
 else
-    warn "secure-ipmi-terminal PAM policy未適用（finalize前なら正常）"
+    warn "secure-ipmi-terminal PAM policy未適用（configure前なら正常）"
 fi
 
 if tailscale status >/dev/null 2>&1; then
@@ -235,7 +244,7 @@ check_luks_fido_boot() {
 if command -v dracut >/dev/null 2>&1 || [ -f /etc/dracut.conf.d/90-secure-ipmi-terminal.conf ]; then
     check_luks_fido_boot
 else
-    warn "dracutによるLUKS FIDO2 boot未適用（finalize前なら正常）"
+    warn "dracutによるLUKS FIDO2 boot未適用（configure前なら正常）"
 fi
 
 printf '\nResult: PASS=%d WARN=%d FAIL=%d\n' "$PASS" "$WARN" "$FAIL"

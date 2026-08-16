@@ -1,0 +1,56 @@
+---
+- name: secure-ipmi-terminal FIDO2認証構成
+  hosts: local
+  gather_facts: true
+  become: false
+
+  pre_tasks:
+    - name: rootで実行されていることを確認
+      ansible.builtin.assert:
+        that:
+          - ansible_user_uid == 0
+        fail_msg: "sudo ansible-playbook configure.yml の形で実行してください。"
+
+    - name: Debian 13系であることを確認
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Debian'
+          - ansible_distribution_major_version == '13'
+        fail_msg: "このCookbookはDebian 13 (trixie)専用です。"
+
+    - name: PAM用FIDO2マッピングが存在することを確認
+      ansible.builtin.stat:
+        path: /etc/u2f_mappings
+      register: u2f_mapping
+
+    - name: PAM用FIDO2マッピングがない場合は停止
+      ansible.builtin.assert:
+        that:
+          - u2f_mapping.stat.exists
+          - u2f_mapping.stat.isreg
+        fail_msg: "先にREADMEの手順で /etc/u2f_mappings を作成してください。"
+
+    - name: sysadmin/ipmiのFIDO2 mappingが独立した行として存在することを確認
+      ansible.builtin.shell: |
+        awk -F: '
+          $1 == "sysadmin" && length($2) > 0 { sysadmin_count++ }
+          $1 == "ipmi" && length($2) > 0 { ipmi_count++ }
+          END { exit !(sysadmin_count == 1 && ipmi_count == 1) }
+        ' /etc/u2f_mappings
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+  roles:
+    - fido-auth
+    - luks-fido
+
+  post_tasks:
+    - name: FIDO2認証経路の実機確認を案内
+      ansible.builtin.debug:
+        msg:
+          - "PAM設定とdracutによるLUKS FIDO2 boot設定を反映しました。旧password credentialはまだ残しています。"
+          - "通常GRUB entryからcold bootし、root LUKSがFIDO2 PIN+touchで解錠できることを確認してください。"
+          - "実TTYでsysadminがFIDO2 PIN+touchだけでログインできることを確認してください。"
+          - "sudoも sudo -k の後にFIDO2 PIN+touchだけで成功することを確認してください。"
+          - "すべて確認後、一回限りのcommitとして: sudo ansible-playbook finalize.yml -e finalize_credentials=true"

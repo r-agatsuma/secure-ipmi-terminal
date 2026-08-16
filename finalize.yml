@@ -1,19 +1,19 @@
 ---
-- name: secure-ipmi-terminal 認証の最終構成
+- name: secure-ipmi-terminal credential finalization
   hosts: local
   gather_facts: true
   become: false
 
   vars:
-    # 初回はfalseのまま実行し、FIDO2認証を検証してからtrueで再実行する。
-    lock_passwords: false
+    # このplaybookは旧password credentialを廃止する一回限りのcommit操作。
+    finalize_credentials: false
 
   pre_tasks:
     - name: rootで実行されていることを確認
       ansible.builtin.assert:
         that:
           - ansible_user_uid == 0
-        fail_msg: "sudo ansible-playbook finalize.yml の形で実行してください。"
+        fail_msg: "sudo ansible-playbook finalize.yml -e finalize_credentials=true の形で実行してください。"
 
     - name: Debian 13系であることを確認
       ansible.builtin.assert:
@@ -22,52 +22,108 @@
           - ansible_distribution_major_version == '13'
         fail_msg: "このCookbookはDebian 13 (trixie)専用です。"
 
-    - name: PAM用FIDO2マッピングが存在することを確認
-      ansible.builtin.stat:
-        path: /etc/u2f_mappings
-      register: u2f_mapping
-
-    - name: PAM用FIDO2マッピングがない場合は停止
+    - name: credential finalizationの明示的なcommitを要求
       ansible.builtin.assert:
         that:
-          - u2f_mapping.stat.exists
-          - u2f_mapping.stat.isreg
-        fail_msg: "先にREADMEの手順で /etc/u2f_mappings を作成してください。"
+          - finalize_credentials | bool
+        fail_msg: >-
+          このplaybookはUNIX passwordをlockし、LUKSのtraditional password slotを削除します。
+          GDM/TTY/sudo/cold bootのFIDO2認証を実機確認した後、
+          -e finalize_credentials=true を付けて明示的に実行してください。
 
-    - name: sysadmin/ipmiのFIDO2 mappingが独立した行として存在することを確認
+    - name: configure済みのPAM policyが存在することを確認
       ansible.builtin.shell: |
-        awk -F: '
-          $1 == "sysadmin" && length($2) > 0 { sysadmin_count++ }
-          $1 == "ipmi" && length($2) > 0 { ipmi_count++ }
-          END { exit !(sysadmin_count == 1 && ipmi_count == 1) }
-        ' /etc/u2f_mappings
+        set -eu
+        test -s /etc/u2f_mappings
+        test -f /etc/pam.d/secure-ipmi-terminal-gdm
+        test -f /etc/pam.d/secure-ipmi-terminal-login
+        test -f /etc/pam.d/secure-ipmi-terminal-sudo
       args:
         executable: /bin/sh
       changed_when: false
 
-  roles:
-    - fido-auth
-    - luks-fido
-    - privilege
-
-  post_tasks:
-    - name: パスワード認証を最終的にロック
+    - name: root LUKS用crypttab sourceを特定
       ansible.builtin.shell: |
-        set -eu
-        passwd -l root >/dev/null 2>&1 || true
-        passwd -l ipmi >/dev/null 2>&1 || true
-        passwd -l sysadmin >/dev/null 2>&1
+        awk '
+          /^[[:space:]]*(#|$)/ { next }
+          {
+            nopts = split($4, opts, ",")
+            for (i = 1; i <= nopts; i++) {
+              if (opts[i] == "x-initrd.attach") {
+                print $2
+                count++
+              }
+            }
+          }
+          END { if (count != 1) exit 1 }
+        ' /etc/crypttab
       args:
         executable: /bin/sh
-      when: lock_passwords | bool
+      register: finalize_luks_source
+      changed_when: false
+
+    - name: root LUKS deviceを解決
+      ansible.builtin.shell: |
+        set -eu
+        source='{{ finalize_luks_source.stdout }}'
+        case "$source" in
+          UUID=*) path="/dev/disk/by-uuid/${source#UUID=}" ;;
+          /dev/*) path="$source" ;;
+          *)
+            printf 'unsupported crypttab source: %s\n' "$source" >&2
+            exit 1
+            ;;
+        esac
+        readlink -f "$path"
+      args:
+        executable: /bin/sh
+      register: finalize_luks_device
+      changed_when: false
+
+    - name: root LUKS2にFIDO2 tokenが1個以上あることを確認
+      ansible.builtin.shell: |
+        set -eu
+        cryptsetup luksDump --dump-json-metadata '{{ finalize_luks_device.stdout }}' \
+          | jq -e '[.tokens[]? | select(.type == "systemd-fido2")] | length > 0' \
+          >/dev/null
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+  tasks:
+    - name: UNIX password credentialをlock
+      ansible.builtin.user:
+        name: "{{ item }}"
+        password_lock: true
+      loop:
+        - root
+        - ipmi
+        - sysadmin
+
+    - name: LUKS traditional password slotを削除
+      ansible.builtin.command:
+        argv:
+          - systemd-cryptenroll
+          - --wipe-slot=password
+          - "{{ finalize_luks_device.stdout }}"
       changed_when: true
 
-    - name: 最終ロック前の案内
+  post_tasks:
+    - name: LUKS FIDO2 tokenが削除後も残っていることを確認
+      ansible.builtin.shell: |
+        set -eu
+        cryptsetup luksDump --dump-json-metadata '{{ finalize_luks_device.stdout }}' \
+          | jq -e '[.tokens[]? | select(.type == "systemd-fido2")] | length > 0' \
+          >/dev/null
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+    - name: FIDO2-only構成へのcommit完了を案内
       ansible.builtin.debug:
         msg:
-          - "PAM設定とdracutによるLUKS FIDO2 boot設定を反映しました。まだsysadminのUNIXパスワードはロックしていません。"
-          - "まず通常GRUB entryからcold bootし、root LUKSがFIDO2 PIN+touchで解錠できることを確認してください。"
-          - "続いて実TTYでsysadminがUNIX passwordなしのFIDO2 PIN+touchだけでログインできることを確認してください。"
-          - "sudoも sudo -k の後にFIDO2 PIN+touchだけで成功することを確認してください。"
-          - "すべて問題なければ: sudo ansible-playbook finalize.yml -e lock_passwords=true"
-      when: not (lock_passwords | bool)
+          - "旧password credentialを廃止しました。"
+          - "root/ipmi/sysadminのUNIX passwordはlock済みです。"
+          - "LUKSのtraditional password slotは削除済みで、Installer時passphraseはrecovery手段ではありません。"
+          - "通常GRUB entryからcold bootし、FIDO2 PIN+touchで起動できることを最終確認してください。"
+          - "YubiKey紛失・故障やFIDO2 boot経路の破損で解錠不能になった場合、この端末は再インストールします。"

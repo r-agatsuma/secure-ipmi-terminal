@@ -34,15 +34,13 @@
           - u2f_mapping.stat.isreg
         fail_msg: "先にREADMEの手順で /etc/u2f_mappings を作成してください。"
 
-    - name: sysadminとipmiのマッピングが含まれることを確認
-      ansible.builtin.command: grep -E '^(sysadmin|ipmi):' /etc/u2f_mappings
-      register: u2f_users
-      changed_when: false
-      failed_when: u2f_users.rc != 0 or ('sysadmin:' not in u2f_users.stdout) or ('ipmi:' not in u2f_users.stdout)
-
-    - name: sysadmin/ipmiにFIDO2 credentialが1本以上登録されていることを確認
+    - name: sysadmin/ipmiのFIDO2 mappingが独立した行として存在することを確認
       ansible.builtin.shell: |
-        awk -F: '$1 == "sysadmin" && length($2) > 0 { sysadmin_ok=1 } $1 == "ipmi" && length($2) > 0 { ipmi_ok=1 } END { exit !(sysadmin_ok && ipmi_ok) }' /etc/u2f_mappings
+        awk -F: '
+          $1 == "sysadmin" && length($2) > 0 { sysadmin_count++ }
+          $1 == "ipmi" && length($2) > 0 { ipmi_count++ }
+          END { exit !(sysadmin_count == 1 && ipmi_count == 1) }
+        ' /etc/u2f_mappings
       args:
         executable: /bin/sh
       changed_when: false

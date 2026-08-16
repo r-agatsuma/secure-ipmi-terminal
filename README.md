@@ -186,8 +186,11 @@ YubiKeyを挿し、`sysadmin`と`ipmi`のcredentialを作成します。
 
 ```bash
 umask 077
-pamu2fcfg -u sysadmin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N > /tmp/sysadmin.u2f
-pamu2fcfg -u ipmi -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N > /tmp/ipmi.u2f
+pamu2fcfg -u sysadmin -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/sysadmin.u2f
+printf '\n' >> /tmp/sysadmin.u2f
+
+pamu2fcfg -u ipmi -o pam://secure-ipmi-terminal -i pam://secure-ipmi-terminal -N | tr -d '\n' > /tmp/ipmi.u2f
+printf '\n' >> /tmp/ipmi.u2f
 ```
 
 root管理のmapping fileへ配置する前に、2ユーザーが1行ずつ出力されていることを確認します。
